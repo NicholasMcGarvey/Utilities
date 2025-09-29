@@ -1,0 +1,53 @@
+CREATE TABLE [AppConfigDetails] (
+    [ConfigId] COUNTER NOT NULL,
+    [AppId] LONG NOT NULL,
+    [EnvironId] LONG NOT NULL,
+    [ConfigName] TEXT(20),
+    [ConfigDesc] TEXT(100),
+    [BackEndPath] TEXT(255),
+    [FrontEndPath] TEXT(255),
+    [ExeName] TEXT(65),
+    CONSTRAINT [PK_AppConfigDetails] PRIMARY KEY ([ConfigId])
+);
+
+CREATE TABLE [AppDetails] (
+    [AppId] COUNTER,
+    [AppName] TEXT(75) NOT NULL,
+    [AppDesc] TEXT(255),
+    [CreateDate] DATETIME,
+    [CreateUser] TEXT(50),
+    [Inactive] YESNO DEFAULT FALSE,
+    [InactiveDate] DATETIME,
+    CONSTRAINT [PK_AppDetails] PRIMARY KEY ([AppId])
+);
+
+CREATE TABLE [AppVersionDetails] (
+    [VersionDetailId] COUNTER NOT NULL,
+    [ConfigId] LONG NOT NULL,
+    [VersionNumber] TEXT(50) NOT NULL,
+    [VersionDate] DATETIME NOT NULL,
+    [VersionNotes] LONGTEXT,
+    [ForceUpdate] YESNO DEFAULT No,
+    [ForceUpdateDt] DATETIME,
+    CONSTRAINT [PK_AppVersionDetails] PRIMARY KEY ([VersionDetailId])
+);
+
+CREATE TABLE [Environments] (
+    [EnvironId] COUNTER NOT NULL,
+    [EnvironName] TEXT(35) NOT NULL,
+    [EnvironDesc] TEXT(100),
+    [EnvShortCode] TEXT(4) NOT NULL,
+    [SortOrder] LONG DEFAULT 99,
+    [Inactive] YESNO DEFAULT No,
+    CONSTRAINT [PK_Environments] PRIMARY KEY ([EnvironId])
+);
+
+CREATE INDEX [AppConfigDetailsAppId] ON [AppConfigDetails] ([AppId] ASC);
+CREATE UNIQUE INDEX [UIDX_AppConfigDetails] ON [AppConfigDetails] ([AppId] ASC, [EnvironId] ASC, [ConfigName] ASC);
+CREATE UNIQUE INDEX [UIDK_VersionNumDt] ON [AppVersionDetails] ([ConfigId] ASC, [VersionNumber] ASC);
+
+ALTER TABLE [AppConfigDetails] ADD CONSTRAINT [FK_AppConfigDetails_AppVersionDetails] FOREIGN KEY ([ConfigId]) REFERENCES [AppVersionDetails] ([ConfigId]);
+ALTER TABLE [AppDetails] ADD CONSTRAINT [FK_AppDetails_AppConfigDetails] FOREIGN KEY ([AppId]) REFERENCES [AppConfigDetails] ([AppId]) ON UPDATE CASCADE ON DELETE CASCADE;
+ALTER TABLE [MSysNavPaneGroupCategories] ADD CONSTRAINT [FK_MSysNavPaneGroupCategories_MSysNavPaneGroups] FOREIGN KEY ([Id]) REFERENCES [MSysNavPaneGroups] ([GroupCategoryID]) ON UPDATE CASCADE ON DELETE CASCADE;
+ALTER TABLE [MSysNavPaneGroups] ADD CONSTRAINT [FK_MSysNavPaneGroups_MSysNavPaneGroupToObjects] FOREIGN KEY ([Id]) REFERENCES [MSysNavPaneGroupToObjects] ([GroupID]) ON UPDATE CASCADE ON DELETE CASCADE;
+ALTER TABLE [Environments] ADD CONSTRAINT [FK_Environments_AppConfigDetails] FOREIGN KEY ([EnvironId]) REFERENCES [AppConfigDetails] ([EnvironId]);
