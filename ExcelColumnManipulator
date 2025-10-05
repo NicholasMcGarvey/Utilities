@@ -1,0 +1,552 @@
+'======================
+' Module: KeepColumnsAddin
+'======================
+Option Explicit
+
+' Ribbon handle (if you ever want to invalidate later)
+Private pRibbon As IRibbonUI
+
+'----------------------
+' Ribbon callbacks
+'----------------------
+Public Sub OnRibbonLoad(rib As IRibbonUI)
+    Set pRibbon = rib
+End Sub
+
+' Entry point for the Ribbon button
+' Prompts for a file, parses columns, and deletes any columns not in the keep-list.
+'Public Sub KeepColumnsFromFile(control As IRibbonControl)
+Public Sub KeepColumnsFromFile()
+    On Error GoTo EH
+
+    Dim fp As String
+    fp = PickDefinitionFile()
+    If Len(fp) = 0 Then Exit Sub  ' cancelled
+
+    Dim allowed As Object ' Scripting.Dictionary (late-bound)
+    Set allowed = CreateObject("Scripting.Dictionary")
+    allowed.CompareMode = 1 ' TextCompare
+
+    If LCase$(Right$(fp, 4)) = "json" Or LCase$(Right$(fp, 5)) = ".json" Then
+        ParseJsonColumns fp, allowed
+    ElseIf LCase$(Right$(fp, 3)) = "xml" Or LCase$(Right$(fp, 4)) = ".xml" Then
+        ParseXmlColumns fp, allowed
+    Else
+        MsgBox "Unsupported file type. Please select a .json or .xml file.", vbExclamation
+        Exit Sub
+    End If
+
+    If allowed.Count = 0 Then
+        MsgBox "No columns found in the file.", vbExclamation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+
+    Dim delCount As Long
+    delCount = DeleteAllButAllowedColumns(ws, allowed)
+
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    MsgBox "Done." & vbCrLf & _
+           "Kept: " & (CountColumns(ws) - delCount) & vbCrLf & _
+           "Deleted: " & delCount, vbInformation
+    Exit Sub
+
+EH:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    MsgBox "Error: " & Err.Number & vbCrLf & Err.Description, vbCritical
+End Sub
+
+'----------------------
+' Core logic
+'----------------------
+
+' Deletes all columns on ws whose header (Row 1) is NOT in allowed set.
+' allowed can contain either column headers or column letters (A, B, AA, etc.).
+Private Function DeleteAllButAllowedColumns(ws As Worksheet, allowed As Object) As Long
+    Dim usedCols As Long, lastCol As Long
+    lastCol = LastUsedCol(ws)
+    If lastCol = 0 Then DeleteAllButAllowedColumns = 0: Exit Function
+
+    Dim modeByLetters As Boolean
+    modeByLetters = AllKeysAreLetters(allowed)
+
+    Dim toDelete As Collection
+    Set toDelete = New Collection
+
+    Dim c As Long
+    For c = 1 To lastCol
+        Dim keep As Boolean
+        keep = False
+
+        If modeByLetters Then
+            keep = allowed.Exists(ColLetter(c))
+        Else
+            Dim hdr As String
+            hdr = NormalizeHeader(GetHeader(ws, c))
+            If Len(hdr) > 0 Then keep = allowed.Exists(hdr)
+        End If
+
+        If Not keep Then toDelete.Add c
+    Next
+
+    ' Confirm (destructive)
+    If toDelete.Count = 0 Then
+        DeleteAllButAllowedColumns = 0
+        Exit Function
+    End If
+
+    Dim resp As VbMsgBoxResult
+    resp = MsgBox("This will delete " & toDelete.Count & " column(s) not in your list." & vbCrLf & _
+                  "Continue?", vbQuestion + vbOKCancel)
+    If resp <> vbOK Then
+        DeleteAllButAllowedColumns = 0
+        Exit Function
+    End If
+
+    ' Delete right-to-left to avoid index shifts
+    Dim i As Long, delCol As Long
+    For i = toDelete.Count To 1 Step -1
+        delCol = CLng(toDelete(i))
+        ws.Columns(delCol).Delete
+    Next
+
+    DeleteAllButAllowedColumns = toDelete.Count
+End Function
+
+' Return the normalized header in Row 1 for column c
+Private Function GetHeader(ws As Worksheet, c As Long) As String
+    On Error Resume Next
+    Dim v: v = ws.Cells(1, c).Value
+    If IsError(v) Then
+        GetHeader = ""
+    Else
+        GetHeader = CStr(v)
+    End If
+End Function
+
+' Normalize headers: trim, collapse internal whitespace, uppercase
+Private Function NormalizeHeader(ByVal s As String) As String
+    s = Trim$(s)
+    s = Replace(s, vbTab, " ")
+    s = Replace(s, vbCr, " ")
+    s = Replace(s, vbLf, " ")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    NormalizeHeader = UCase$(s)
+End Function
+
+' True if every key in the dict is A..Z letter(s), e.g., A, B, AA
+Private Function AllKeysAreLetters(dict As Object) As Boolean
+    Dim k As Variant
+    For Each k In dict.Keys
+        If Not IsColumnLetter(CStr(k)) Then
+            AllKeysAreLetters = False
+            Exit Function
+        End If
+    Next
+    AllKeysAreLetters = True
+End Function
+
+' Quick test for column letters
+Private Function IsColumnLetter(ByVal s As String) As Boolean
+    Dim i As Long
+    s = UCase$(Trim$(s))
+    If Len(s) = 0 Then IsColumnLetter = False: Exit Function
+    For i = 1 To Len(s)
+        Dim ch As String: ch = Mid$(s, i, 1)
+        If ch < "A" Or ch > "Z" Then IsColumnLetter = False: Exit Function
+    Next
+    IsColumnLetter = True
+End Function
+
+' Convert 1-based column number to Excel letter(s)
+Private Function ColLetter(colNum As Long) As String
+    Dim s As String, n As Long
+    n = colNum
+    Do While n > 0
+        Dim r As Long
+        r = (n - 1) Mod 26
+        s = Chr$(65 + r) & s
+        n = (n - 1) \ 26
+    Loop
+    ColLetter = s
+End Function
+
+Private Function LastUsedCol(ws As Worksheet) As Long
+    On Error Resume Next
+    LastUsedCol = ws.Cells.Find(What:="*", LookIn:=xlFormulas, _
+                      SearchOrder:=xlByColumns, SearchDirection:=xlPrevious).Column
+End Function
+
+Private Function CountColumns(ws As Worksheet) As Long
+    CountColumns = LastUsedCol(ws)
+End Function
+
+'----------------------
+' File picking
+'----------------------
+Private Function PickDefinitionFile() As String
+    Dim fd As FileDialog
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    With fd
+        .Title = "Pick a column list file (.json or .xml)"
+        .AllowMultiSelect = False
+        .Filters.Clear
+        .Filters.Add "JSON", "*.json"
+        .Filters.Add "XML", "*.xml"
+        .Filters.Add "All", "*.json;*.xml"
+        If .Show = -1 Then
+            PickDefinitionFile = .SelectedItems(1)
+        Else
+            PickDefinitionFile = vbNullString
+        End If
+    End With
+End Function
+
+'----------------------
+' XML parsing
+'----------------------
+' Accepts either:
+'   <Columns><Column>Col A</Column><Column>Col B</Column></Columns>
+' or
+'   <columns><item>A</item><item>B</item></columns>
+Private Sub ParseXmlColumns(filePath As String, ByRef dict As Object)
+    Dim xm As Object ' MSXML2.DOMDocument60 (late-bound)
+    Set xm = CreateObject("MSXML2.DOMDocument.6.0")
+    xm.Async = False
+    xm.ValidateOnParse = False
+
+    If Not xm.Load(filePath) Then
+        Err.Raise 5, , "Invalid XML file."
+    End If
+
+    Dim nodes As Object
+    Set nodes = xm.SelectNodes("//Column|//column|//item|//Item")
+
+    Dim i As Long
+    For i = 0 To nodes.Length - 1
+        Dim val As String
+        val = CStr(nodes.Item(i).Text)
+        AddAllowedEntry dict, val
+    Next
+
+    ' Also support <columns>Comma,Separated,Headers</columns>
+    If dict.Count = 0 Then
+        Dim root As Object
+        Set root = xm.DocumentElement
+        If Not root Is Nothing Then
+            Dim txt As String
+            txt = Trim$(root.Text)
+            If InStr(txt, ",") > 0 Then
+                Dim parts() As String
+                parts = Split(txt, ",")
+                Dim p As Variant
+                For Each p In parts
+                    AddAllowedEntry dict, CStr(p)
+                Next
+            End If
+        End If
+    End If
+End Sub
+
+'----------------------
+' JSON parsing (no external libs)
+'----------------------
+' Accepts either:
+'   ["Col A","Col B","Col C"]
+' or
+'   { "columns": ["Col A","Col B"] }
+Private Sub ParseJsonColumns(filePath As String, ByRef dict As Object)
+    Dim txt As String
+    txt = ReadAllText(filePath)
+    If Len(txt) = 0 Then Err.Raise 5, , "Empty JSON file."
+
+    Dim arrText As String
+    arrText = ExtractJsonArrayText(txt)
+
+    If Len(arrText) = 0 Then
+        Err.Raise 5, , "Could not find a JSON array. Expecting [""] or { ""columns"": [] }."
+    End If
+
+    Dim items As Collection
+    Set items = ParseJsonStringArray(arrText)
+
+    Dim it As Variant
+    For Each it In items
+        AddAllowedEntry dict, CStr(it)
+    Next
+End Sub
+
+' Extract the first array [...] found.
+' If object with "columns" exists, pulls that array.
+Private Function ExtractJsonArrayText(ByVal s As String) As String
+    s = Trim$(s)
+
+    Dim i As Long, lvl As Long, startIdx As Long
+    ' Try object with "columns"
+    Dim pos As Long
+    pos = InStr(1, LCase$(s), """columns""")
+    If pos > 0 Then
+        Dim openArr As Long
+        openArr = InStr(pos, s, "[")
+        If openArr > 0 Then
+            startIdx = openArr
+            lvl = 0
+            For i = openArr To Len(s)
+                Dim ch As String
+                ch = Mid$(s, i, 1)
+                If ch = "[" Then lvl = lvl + 1
+                If ch = "]" Then
+                    lvl = lvl - 1
+                    If lvl = 0 Then
+                        ExtractJsonArrayText = Mid$(s, startIdx, i - startIdx + 1)
+                        Exit Function
+                    End If
+                End If
+            Next
+        End If
+    End If
+
+    ' Else: first top-level [...]
+    For i = 1 To Len(s)
+        If Mid$(s, i, 1) = "[" Then
+            startIdx = i: lvl = 1
+            Dim j As Long
+            For j = i + 1 To Len(s)
+                Dim ch2 As String
+                ch2 = Mid$(s, j, 1)
+                If ch2 = "[" Then lvl = lvl + 1
+                If ch2 = "]" Then
+                    lvl = lvl - 1
+                    If lvl = 0 Then
+                        ExtractJsonArrayText = Mid$(s, startIdx, j - startIdx + 1)
+                        Exit Function
+                    End If
+                End If
+            Next j
+            Exit For
+        End If
+    Next i
+End Function
+' Parses a very simple JSON string array: ["A","B","C"]
+' Handles escaped quotes \" inside items.
+Private Function ParseJsonStringArray(arrText As String) As Collection
+    Dim items As New Collection
+    Dim i As Long, inQuotes As Boolean, cur As String, esc As Boolean
+    arrText = Trim$(arrText)
+    If Left$(arrText, 1) <> "[" Or Right$(arrText, 1) <> "]" Then
+        Err.Raise 5, , "Invalid JSON array."
+    End If
+
+    For i = 2 To Len(arrText) - 1
+        Dim ch As String
+        ch = Mid$(arrText, i, 1)
+
+        If inQuotes Then
+            If esc Then
+                cur = cur & ch
+                esc = False
+            ElseIf ch = "\" Then
+                esc = True
+            ElseIf ch = """" Then
+                ' end of current string
+                items.Add cur
+                cur = ""
+                inQuotes = False
+            Else
+                cur = cur & ch
+            End If
+        Else
+            If ch = """" Then inQuotes = True
+            ' ignore commas/whitespace outside strings
+        End If
+    Next i
+
+    Set ParseJsonStringArray = items
+End Function
+
+'----------------------
+' Helpers
+'----------------------
+Private Sub AddAllowedEntry(ByRef dict As Object, ByVal raw As String)
+    raw = Trim$(raw)
+    If Len(raw) = 0 Then Exit Sub
+
+    ' If letters, store as letters; else store normalized header
+    If IsColumnLetter(raw) Then
+        If Not dict.Exists(UCase$(raw)) Then dict.Add UCase$(raw), True
+    Else
+        Dim norm As String
+        norm = NormalizeHeader(raw)
+        If Len(norm) > 0 Then
+            If Not dict.Exists(norm) Then dict.Add norm, True
+        End If
+    End If
+End Sub
+
+Private Function ReadAllText(filePath As String) As String
+    Dim f As Integer: f = FreeFile
+    Open filePath For Binary As #f
+    ReadAllText = Space$(LOF(f))
+    Get #f, , ReadAllText
+    Close #f
+End Function
+
+'======================
+' Create a JSON/XML columns file from current headers
+'======================
+Public Sub CreateColumnsToKeep(Optional control As IRibbonControl)
+    On Error GoTo EH
+
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+
+    Dim headers As Collection
+    Set headers = GetHeadersFromRow1(ws)
+
+    If headers.Count = 0 Then
+        MsgBox "No headers found in row 1.", vbExclamation
+        Exit Sub
+    End If
+
+    Dim outPath As String, fmt As String
+    outPath = PickSavePath(fmt) ' returns full path; sets fmt="json" or "xml"
+    If Len(outPath) = 0 Then Exit Sub
+
+    Dim content As String
+    If LCase$(fmt) = "xml" Then
+        content = BuildXmlColumns(headers)
+    Else
+        content = BuildJsonColumns(headers)
+        fmt = "json" ' normalize
+    End If
+
+    WriteAllText outPath, content
+    MsgBox "Created " & UCase$(fmt) & " columns file:" & vbCrLf & outPath, vbInformation
+    Exit Sub
+
+EH:
+    MsgBox "Error: " & Err.Number & vbCrLf & Err.Description, vbCritical
+End Sub
+
+'----------------------
+' Collect headers from row 1 (non-blank, first used row)
+' De-duplicates while preserving order
+'----------------------
+Private Function GetHeadersFromRow1(ws As Worksheet) As Collection
+    Dim colLast As Long: colLast = LastUsedCol(ws)
+    Dim seen As Object: Set seen = CreateObject("Scripting.Dictionary")
+    seen.CompareMode = 1 ' TextCompare
+    Dim out As New Collection
+
+    Dim c As Long, raw As String, norm As String
+    For c = 1 To colLast
+        raw = CStr(ws.Cells(1, c).Value)
+        raw = Trim$(raw)
+        If Len(raw) > 0 Then
+            norm = NormalizeHeader(raw)
+            If Not seen.Exists(norm) Then
+                seen.Add norm, True
+                out.Add raw ' keep original text (not normalized) for output
+            End If
+        End If
+    Next
+
+    Set GetHeadersFromRow1 = out
+End Function
+
+'----------------------
+' Save dialog (JSON/XML)
+'----------------------
+Private Function PickSavePath(ByRef outFormat As String) As String
+    Dim fd As FileDialog
+    Set fd = Application.FileDialog(msoFileDialogSaveAs)
+    With fd
+        .Title = "Save Columns Definition"
+        .Filters.Clear
+        .Filters.Add "JSON (*.json)", "*.json"
+        .Filters.Add "XML (*.xml)", "*.xml"
+        .FilterIndex = 1
+        If .Show <> -1 Then Exit Function
+
+        Dim p As String: p = .SelectedItems(1)
+
+        ' Ensure extension matches chosen filter
+        If .FilterIndex = 2 Then
+            outFormat = "xml"
+            If LCase$(Right$(p, 4)) <> ".xml" Then p = p & ".xml"
+        Else
+            outFormat = "json"
+            If LCase$(Right$(p, 5)) <> ".json" Then p = p & ".json"
+        End If
+
+        PickSavePath = p
+    End With
+End Function
+
+'----------------------
+' JSON builder: ["A","B","C"]
+'----------------------
+Private Function BuildJsonColumns(items As Collection) As String
+    Dim i As Long, s As String
+    s = "["
+    For i = 1 To items.Count
+        If i > 1 Then s = s & ","
+        s = s & """" & JsonEscape(CStr(items(i))) & """"
+    Next
+    s = s & "]"
+    BuildJsonColumns = s
+End Function
+
+Private Function JsonEscape(ByVal s As String) As String
+    ' Minimal safe escaping for typical headers
+    s = Replace$(s, "\", "\\")
+    s = Replace$(s, """", "\""")
+    s = Replace$(s, vbCrLf, "\n")
+    s = Replace$(s, vbCr, "\n")
+    s = Replace$(s, vbLf, "\n")
+    JsonEscape = s
+End Function
+
+'----------------------
+' XML builder:
+' <Columns><Column>...</Column>...</Columns>
+'----------------------
+Private Function BuildXmlColumns(items As Collection) As String
+    Dim i As Long, sb As String
+    sb = "<?xml version=""1.0"" encoding=""UTF-8""?>" & vbCrLf & "<Columns>" & vbCrLf
+    For i = 1 To items.Count
+        sb = sb & "  <Column>" & XMLEscape(CStr(items(i))) & "</Column>" & vbCrLf
+    Next
+    sb = sb & "</Columns>"
+    BuildXmlColumns = sb
+End Function
+
+Private Function XMLEscape(ByVal s As String) As String
+    s = Replace$(s, "&", "&amp;")
+    s = Replace$(s, "<", "&lt;")
+    s = Replace$(s, ">", "&gt;")
+    s = Replace$(s, """", "&quot;")
+    s = Replace$(s, "'", "&apos;")
+    XMLEscape = s
+End Function
+
+'----------------------
+' IO helper
+'----------------------
+Private Sub WriteAllText(filePath As String, ByVal content As String)
+    Dim f As Integer: f = FreeFile
+    Open filePath For Output As #f
+    Print #f, content
+    Close #f
+End Sub
+
