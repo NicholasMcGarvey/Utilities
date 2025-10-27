@@ -74,16 +74,26 @@ function Resolve-RelativePath {
 
 function Get-TextFiles {
   param([string]$Root,[string[]]$Exts,[string[]]$Exclude)
+
+  # Build a case-insensitive set of extensions, normalizing to start with a dot
   $extSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-  foreach ($e in $Exts) { [void]$extSet.Add(($e.StartsWith('.') ? $e : ".$e")) }
+  foreach ($e in $Exts) {
+    $ext = $e
+    if ($null -ne $ext -and $ext.Length -gt 0) {
+      if (-not $ext.StartsWith('.')) { $ext = ".$ext" }
+      [void]$extSet.Add($ext)
+    }
+  }
 
   $files = Get-ChildItem -Path $Root -Recurse -File -ErrorAction Stop |
     Where-Object { $extSet.Contains([System.IO.Path]::GetExtension($_.FullName)) } |
     ForEach-Object {
       $rel = Resolve-RelativePath -Root $Root -FullPath $_.FullName
-      # exclude?
+
+      # Exclusions are matched against the relative path
       $excluded = $false
       foreach ($p in $Exclude) { if ($rel -like $p) { $excluded = $true; break } }
+
       if (-not $excluded) {
         [PSCustomObject]@{
           RelativePath = $rel
