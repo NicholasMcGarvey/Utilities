@@ -1,6 +1,13 @@
 <# 
 .\Compare-TextTrees.ps1 -LeftRoot "C:\A" -RightRoot "C:\B" -Extensions .txt,.csv,.log,.json,.xml -WriteDiffs -ReportCsv ".\diff-summary.csv"
 
+Notes & tips
+Text file selection: controlled by -Extensions. Add/remove as needed.
+Exclusions: use -ExcludePattern for relative path wildcards (e.g., *\obj\*, *.min.js).
+Fast mode: -Fast uses size/hash to skip content reads when identical; still produces diffs when -WriteDiffs is set.
+Diff files: simple unified-style outputs (not context-aware moves); good for quick reviews or attaching to tickets.
+
+
 .SYNOPSIS
   Compare text files in two folder trees.
 
